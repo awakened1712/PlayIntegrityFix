@@ -26,6 +26,7 @@
 
 #define VENDING_PACKAGE "com.android.vending"
 #define DROIDGUARD_PACKAGE "com.google.android.gms.unstable"
+#define GMS_PACKAGE "com.google.android.gms"
 
 namespace {
 
@@ -489,9 +490,15 @@ public:
         api->setOption(FORCE_DENYLIST_UNMOUNT);
 
         const std::string_view niceName(name);
+        isGmsMain = niceName == GMS_PACKAGE;
         isGmsUnstable = niceName == DROIDGUARD_PACKAGE;
         isVending = niceName == VENDING_PACKAGE;
-        if (!isGmsUnstable && !isVending) {
+        // The main GMS process is spoofed as well: it assembles the key
+        // attestation request (attestation ID tags) from the system properties,
+        // and those IDs must match the spoofed identity or KeyMint rejects the
+        // request with CANNOT_ATTEST_IDS and the attested device contradicts
+        // the one reported by DroidGuard.
+        if (!isGmsUnstable && !isVending && !isGmsMain) {
             api->setOption(DLCLOSE_MODULE_LIBRARY);
             return;
         }
@@ -502,7 +509,8 @@ public:
             return;
         }
 
-        if (isGmsUnstable && gConfig.spoofProps && !pif::property_virtualizer::install(gConfig)) {
+        if ((isGmsUnstable || isGmsMain) && gConfig.spoofProps
+                && !pif::property_virtualizer::install(gConfig)) {
             LOGE("[PROP-VIRT] unavailable; property spoofing disabled for this process");
         }
     }
@@ -514,14 +522,16 @@ public:
 
         gEnv = env;
 
-        if (isGmsUnstable) {
+        if (isGmsUnstable || isGmsMain) {
             if (gConfig.spoofBuild) {
                 updateBuildFields();
             }
 
-            if (gConfig.needsDex()) {
+            // The DEX hooks DroidGuard inside gms.unstable; it is not needed
+            // (and not safe) in the main GMS process.
+            if (isGmsUnstable && gConfig.needsDex()) {
                 injectDex();
-            } else {
+            } else if (!gConfig.needsDex()) {
                 LOGD("[INJECT] Dex payload skipped because spoofProvider and spoofSignature are false");
             }
 
@@ -543,6 +553,7 @@ private:
     JNIEnv *env = nullptr;
     bool payloadLoaded = false;
     bool isGmsUnstable = false;
+    bool isGmsMain = false;
     bool isVending = false;
 };
 
